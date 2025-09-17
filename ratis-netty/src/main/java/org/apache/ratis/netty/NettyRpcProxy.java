@@ -20,7 +20,7 @@ package org.apache.ratis.netty;
 import org.apache.ratis.client.RaftClientConfigKeys;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.protocol.RaftPeer;
-import org.apache.ratis.protocol.exceptions.TimeoutIOException;
+import org.apache.ratis.protocol.exceptions.NettyRpcException;
 import org.apache.ratis.thirdparty.io.netty.channel.*;
 import org.apache.ratis.thirdparty.io.netty.channel.nio.NioEventLoopGroup;
 import org.apache.ratis.thirdparty.io.netty.channel.socket.SocketChannel;
@@ -35,12 +35,14 @@ import org.apache.ratis.util.IOUtils;
 import org.apache.ratis.util.PeerProxyMap;
 import org.apache.ratis.util.ProtoUtils;
 import org.apache.ratis.util.TimeDuration;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.util.LinkedList;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -48,6 +50,7 @@ import java.util.concurrent.TimeoutException;
 import static org.apache.ratis.proto.netty.NettyProtos.RaftNettyServerReplyProto.RaftNettyServerReplyCase.EXCEPTIONREPLY;
 
 public class NettyRpcProxy implements Closeable {
+  public static final Logger LOG = LoggerFactory.getLogger(NettyRpcProxy.class);
   public static class PeerMap extends PeerProxyMap<NettyRpcProxy> {
     private final EventLoopGroup group = new NioEventLoopGroup();
     private final RaftProperties properties;
@@ -102,7 +105,7 @@ public class NettyRpcProxy implements Closeable {
   class Connection implements Closeable {
     private final NettyClient client = new NettyClient();
     private final Queue<CompletableFuture<RaftNettyServerReplyProto>> replies
-        = new LinkedList<>();
+        = new ConcurrentLinkedQueue<>();
 
     Connection(EventLoopGroup group) throws InterruptedException {
       final ChannelInboundHandler inboundHandler
@@ -121,6 +124,37 @@ public class NettyRpcProxy implements Closeable {
           } else {
             future.complete(proto);
           }
+        }
+
+        @Override
+        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+          if (!replies.isEmpty()) {
+            LOG.error(
+              "Still have {} requests outstanding when caught exception from {} connection",
+              replies.size(),
+              peer,
+              cause);
+            NettyRpcException nettyException = new NettyRpcException(
+              "Netty RPC exception from " + peer + ": " + cause.getMessage(), cause);
+            failOutstandingRequests(nettyException);
+          }
+          client.close();
+        }
+
+        @Override
+        public void channelInactive(ChannelHandlerContext ctx) {
+          if (!replies.isEmpty()) {
+            LOG.error(
+                    "Still have {} requests outstanding when connection from {} is closed",
+                    replies.size(),
+                    peer);
+            failOutstandingRequests(new IOException("Connection to " + peer + " is closed."));
+          }
+        }
+
+        private void failOutstandingRequests(Throwable cause) {
+          replies.forEach(f -> f.completeExceptionally(cause));
+          replies.clear();
         }
       };
       final ChannelInitializer<SocketChannel> initializer
@@ -156,7 +190,7 @@ public class NettyRpcProxy implements Closeable {
       client.close();
       if (!replies.isEmpty()) {
         final IOException e = new IOException("Connection to " + peer + " is closed.");
-        replies.stream().forEach(f -> f.completeExceptionally(e));
+        replies.forEach(f -> f.completeExceptionally(e));
         replies.clear();
       }
     }
@@ -194,7 +228,7 @@ public class NettyRpcProxy implements Closeable {
     } catch (ExecutionException e) {
       throw IOUtils.toIOException(e);
     } catch (TimeoutException e) {
-      throw new TimeoutIOException(e.getMessage(), e);
+      throw new NettyRpcException("Netty RPC timeout from " + peer + ": " + e.getMessage(), e);
     }
   }
 }
