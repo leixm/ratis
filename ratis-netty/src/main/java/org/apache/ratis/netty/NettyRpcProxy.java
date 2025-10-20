@@ -51,8 +51,8 @@ import java.util.concurrent.TimeoutException;
 import static org.apache.ratis.proto.netty.NettyProtos.RaftNettyServerReplyProto.RaftNettyServerReplyCase.EXCEPTIONREPLY;
 
 public class NettyRpcProxy implements Closeable {
+  public static final Logger LOG = LoggerFactory.getLogger(NettyRpcProxy.class);
   public static class PeerMap extends PeerProxyMap<NettyRpcProxy> {
-    public static final Logger LOG = LoggerFactory.getLogger(NettyRpcProxy.class);
     private final EventLoopGroup group = new NioEventLoopGroup();
     private final RaftProperties properties;
 
