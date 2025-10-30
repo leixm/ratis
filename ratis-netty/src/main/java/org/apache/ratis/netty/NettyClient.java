@@ -17,6 +17,7 @@
  */
 package org.apache.ratis.netty;
 
+import org.apache.ratis.protocol.exceptions.AlreadyClosedException;
 import org.apache.ratis.thirdparty.io.netty.bootstrap.Bootstrap;
 import org.apache.ratis.thirdparty.io.netty.channel.Channel;
 import org.apache.ratis.thirdparty.io.netty.channel.ChannelFuture;
@@ -63,8 +64,9 @@ public class NettyClient implements Closeable {
     });
   }
 
-  public ChannelFuture writeAndFlush(Object msg) {
-    lifeCycle.assertCurrentState(LifeCycle.States.RUNNING);
+  public ChannelFuture writeAndFlush(Object msg) throws AlreadyClosedException {
+    lifeCycle.assertCurrentState((n, c) ->
+      new AlreadyClosedException("Client already closed: " + channel), LifeCycle.States.RUNNING);
     return channel.writeAndFlush(msg);
   }
 }
